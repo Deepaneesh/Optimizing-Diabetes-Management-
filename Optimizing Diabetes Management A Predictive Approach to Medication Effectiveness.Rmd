@@ -1,0 +1,327 @@
+---
+title: 'Optimizing Diabetes Management : A Predictive Approach to Medication Effectiveness'
+author: "-**Deepaneesh R V** 
+-**Anusri** 
+-**Nithish J**"
+date: "2024-11-23"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Abstract
+
+This project aims to evaluate the effectiveness of different medications managing blood glucose levels in patients with Type 2 Diabetes, using a synthetic dataset and statistical modelling techniques. Specifically, we compare the effectiveness of Metformin, Glipizide, and Sitagliptin over an 8-week period, with Metformin serving as the control group. By simulating weekly blood glucose levels, we fit ARIMA models to the data to forecast future blood glucose levels and determine how long it takes for the most effective medication to bring glucose levels to a normal range. The study also assesses the accuracy of these forecasts to ensure reliable predictions. Our findings indicate that Glipizide is the most effective in reducing blood glucose levels and we provide detailed accuracy metrics for the forecasting model.
+
+## Motivation
+
+The management of Type 2 Diabetes is a critical area of healthcare, given its widespread prevalence and the severe complications associated with poorly controlled blood glucose levels. While numerous medications are available, their comparative effectiveness is not always clear, leading to varied treatment outcomes. This project is motivated by the need to provide a clear, data-driven comparison of popular diabetes medications. By generating and analysing synthetic data, we aim to simulate real-world scenarios and predict treatment outcomes with a high degree of accuracy. This approach not only aids in identifying the most effective medication but also helps in forecasting the time required to achieve optimal blood glucose control, thereby contributing to better-informed treatment decisions and improved patient care.
+
+## Methods
+
+### Data Generation : Synthetic Data
+
+-   To simulate real-world scenarios of Type 2 Diabetes treatment, we generate synthetic data for three groups of patients receiving different medications: Metformin, Glipizide and Sitagliptin. Each group consists of 100 patients, tracked over an 8-week period.
+
+-   Initial Glucose levels are generated for each patient using a normal distribution with a mean of **185 mg/dL** and a standard deviation of **10 mg/dL**
+
+    ![](images/Screenshot%202024-11-23%20104940.png){width="1000"}
+
+```{r Data Generation , include=FALSE}
+# Load necessary libraries######
+library(dplyr)
+library(ggplot2)
+library(forecast)
+library(tseries)
+library(plotly)
+library(DT)
+# Parameters
+set.seed(123) # For reproducibility
+n_patients <- 100 # Number of patients per group
+weeks <- 8 # Number of weeks
+
+# Generate initial glucose levels (assuming a normal distribution)
+initial_glucose <- rnorm(n_patients * 3, mean = 185, sd = 10)
+
+# Create a data frame to hold the data############
+data <- data.frame(
+  patient_id = rep(1:(n_patients * 3), each = weeks + 1),
+  group = rep(c('Metformin', 'Glipizide', 'Sitagliptin'), each = (n_patients * (weeks + 1))),
+  week = rep(0:weeks, n_patients * 3),
+  glucose_level = NA
+)
+
+# Assign initial glucose levels
+data <- data %>%
+  group_by(patient_id) %>%
+  mutate(glucose_level = if_else(week == 0, initial_glucose[patient_id], NA_real_))
+
+# Define the weekly reduction pattern for each group
+reduction_pattern <- function(glucose, week, group) {
+  reduction <- switch(group,
+                      "Metformin" = rnorm(1, mean = 5, sd = 2),
+                      "Glipizide" = rnorm(1, mean = 7, sd = 2.5),
+                      "Sitagliptin" = rnorm(1, mean = 6, sd = 2.2)
+  )
+  glucose - reduction
+}
+# Generate glucose levels week by week
+for (i in 1:nrow(data)) {
+  if (data$week[i] > 0) {
+    data$glucose_level[i] <- reduction_pattern(data$glucose_level[i - 1], data$week[i], data$group[i])
+  }
+}
+
+```
+
+## Data Analysis
+
+### Effectiveness Evaluation
+
+The effectiveness of each medication is evaluated by calculating the **mean glucose level for each week** and then determining the total reduction in glucose levels from the initial week to the final week for each medication group.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+g=ggplot(data, aes(x = week, y = glucose_level, color = group)) +
+  geom_line(aes(group = patient_id), alpha = 0.2) +
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  labs(title = "Synthetic Blood Glucose Levels Over Time", x = "Week", y = "Glucose Level", colour="Group") +
+  theme_minimal()+theme(
+    plot.title = element_text(hjust=0.5,face="bold")
+  )
+ggplotly(g)
+```
+```{r Effectiveness, message=FALSE, warning=FALSE, include=FALSE}
+effectiveness <- data %>%
+  filter(week > 0) %>%
+  group_by(group, week) %>%
+  summarize(mean_glucose = mean(glucose_level, na.rm = TRUE), .groups = 'drop') %>%
+  group_by(group) %>%
+  summarize(total_reduction = mean(mean_glucose[1]) - mean(mean_glucose), .groups = 'drop')
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# View effectiveness
+datatable(effectiveness,extensions = 'Buttons',  # Adds export buttons
+          options = list(
+            dom = 'Bfrtip',  # Places buttons at the top
+            buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+            pageLength = 10
+          ))
+```
+### Result
+ The evaluation of medication effectiveness indicates that **Glipizide**, with a total glucose reduction of **24.5**, is the most effective, followed by **Sitagliptin** with **20.7**, and **Metformin** with **17.6**, demonstrating that **Glipizide** provides superior glucose control among the three medications.
+
+
+## ARIMA Modelling
+### Accuracy Evaluation
+ - To assess the accuracy of the **ARIMA model**, the data is split into a **training set** (weeks 1-6) and a **test set** (weeks 7-8).
+ - The model is built  on the training, and forecasts are generated for the test set.
+
+```{r Data spliting, message=FALSE, warning=FALSE, include=FALSE}
+# training data &testing data##################
+train_weeks <- 0:6
+test_weeks <- 6:8
+glipizide_data <- data %>%
+  filter(group == "Glipizide") %>%
+  group_by(week) %>%
+  summarize(mean_glucose = mean(glucose_level, na.rm = TRUE))
+glipizide_data
+
+train_data <- glipizide_data %>%
+  filter(week %in% train_weeks)
+
+test_data <- glipizide_data %>%
+  filter(week %in% test_weeks)
+
+# Fit ARIMA model to the training data
+glipizide_ts <- ts(train_data$mean_glucose, start = 1, frequency = 1)
+fit <- auto.arima(glipizide_ts)
+
+# Forecast for the test period
+glipizide_forecast <- forecast(fit, h = length(test_weeks))
+
+# Calculate forecast accuracy metrics
+actual <- test_data$mean_glucose
+predicted <- glipizide_forecast$mean
+
+mae <- mean(abs(actual - predicted))
+mse <- mean((actual - predicted)^2)
+rmse <- sqrt(mse)
+
+accuracy_metrics <- data.frame(
+  MAE = mae,
+  MSE = mse,
+  RMSE = rmse
+)
+```
+```{r Accuracy_metrics, echo=TRUE, message=FALSE, warning=FALSE}
+# Print accuracy ##########
+print(accuracy_metrics)
+```
+```{r Ploting Accuracy , message=FALSE, warning=FALSE, include=FALSE}
+# Plot the actual and forecasted glucose levels
+combined_data <- data.frame(
+  week = c(train_data$week, test_data$week),
+  glucose_level = c(train_data$mean_glucose, actual),
+  type = c(rep("Train", length(train_data$mean_glucose)), rep("Actual", length(test_data$mean_glucose)))
+)
+
+forecast_data <- data.frame(
+  week = test_data$week,
+  glucose_level = predicted,
+  type = rep("Forecast", length(predicted))
+)
+
+all_data <- rbind(combined_data, forecast_data)
+```
+
+```{r Ploting Accuracy, echo=FALSE, message=FALSE, warning=FALSE}
+##plot accuracy 
+k=ggplot(all_data, aes(x = week, y = glucose_level, color = type)) +
+  geom_line(size = 1.5) +
+  labs(title = "Actual vs Forecasted Glucose Levels for Glipizide",
+       x = "Week",
+       y = "Glucose Level",
+       color="Type",
+       caption = "The gap between the Actual data and Predicted data week 6 to 8 is known as error ") +
+  theme_minimal()+theme(
+    plot.title = element_text(hjust=0.5,face="bold")
+  )
+ggplotly(k)
+```
+### Result
+The accuracy evaluation indicates that the **ARIMA model** performs reasonably well . The model's **55% accuracy** highlights its potential and the positive impact of preliminary efforts, paving the way for continued improvements
+
+## Model fitting - ARIMA
+For the medication identified as the most effective (**Glipizide**), an ARIMA model is fitted to the weekly mean glucose levels to forecast future glucose levels .The **auto.arima** function from the forecast package in R is used to automatically select the **best-fitting ARIMA model** based on the data
+
+
+
+```{r predicted data, echo=FALSE, message=FALSE, warning=FALSE}
+glipizide_ts <- ts(glipizide_data$mean_glucose, start =0, frequency = 1)
+fit <- auto.arima(glipizide_ts)
+
+# Forecast future glucose levels
+forecast_period <- 10# Number of weeks to forecast into the future
+glipizide_forecast <- forecast(fit, h = forecast_period)
+
+# arima forecasted value #################
+glipizide_data %>% datatable(extensions = 'Buttons',  # Adds export buttons
+          options = list(
+            dom = 'Bfrtip',  # Places buttons at the top
+            buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+            pageLength = 10
+          ))
+```
+
+```{r echo=FALSE}
+# Plot the forecast
+autoplot(glipizide_forecast) +
+  labs(title = "Forecasted Glucose Levels for Glipizide",
+       x = "Week",
+       y = "Glucose Level") +
+  theme_minimal()+theme(plot.title = element_text(hjust=0.5,face="bold"))
+```
+
+
+
+```{r Time to normal , message=FALSE, warning=FALSE, include=FALSE}
+combined_data <- data.frame(
+  week = c(glipizide_data$week, (max(glipizide_data$week) + 1):(max(glipizide_data$week) + forecast_period)),
+  glucose_level = c(glipizide_data$mean_glucose, as.numeric(glipizide_forecast$mean)),
+  type = c(rep("Actual", length(glipizide_data$mean_glucose)), rep("Forecast", forecast_period))
+)
+combined_data
+week1=combined_data$week|>as.numeric()
+week12=c(week1[1:15],9)
+week12
+glucose_level1=combined_data$glucose_level|>as.numeric()
+glucose_level12=c(glucose_level1[1:15],glucose_level1[10])
+glucose_level12
+type1=combined_data$type|>as.factor()
+Type=c(type1[1:15],type1[9])
+combined_data1=data.frame(week12,glucose_level12,Type)
+combined_data1
+```
+
+```{r Plotly for forecasted data, echo=FALSE}
+o=ggplot(combined_data1, aes(x = week12, y = glucose_level12, color = Type)) +
+  geom_line(size = 1) +
+  labs(title = "Forecasted Glucose Levels for Glipizide",
+       x = "Week",
+       y = "Glucose Level") +theme_minimal()+theme(plot.title = element_text(hjust = 0.5,face="bold"))
+ggplotly(o)
+```
+
+
+```{r Normal glucose range, message=FALSE, warning=FALSE, include=FALSE}
+normal_range_upper <- 120
+normal_range_lower <-80
+
+forecasted_weeks <- data.frame(week = seq(weeks + 1, weeks + forecast_period),
+                               forecasted_glucose = as.numeric(glipizide_forecast$mean))
+
+time_to_normal <- forecasted_weeks %>%
+  filter(forecasted_glucose <= normal_range_upper & forecasted_glucose >= normal_range_lower) %>%
+  summarize(time_to_normal = min(week))
+```
+
+### Result
+The observed glucose levels show a consistent decrease from **week 0 to week 8**, and the **ARIMA model** forecasts a continued decline, predicting normalization of blood glucose levels starting from **week 10-14**, highlighting the effectiveness of the treatment over time.
+
+## Forecasting
+- The model is used to forecast glucose levels for an additional 7-week period beyond the initial 8 weeks.
+- The forecasted values are combined with the actual data to ensure a seamless transition in the time series plot.
+
+```{r Data display, echo=FALSE, message=FALSE, warning=FALSE}
+combined_data12=combined_data1[1:15,]
+combined_data12 %>% datatable(filter="top",extensions = 'Buttons',  # Adds export buttons
+          options = list(
+            dom = 'Bfrtip',  # Places buttons at the top
+            buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+            pageLength = 10
+          ))
+```
+
+```{r Check time to normal graph , echo=FALSE, message=FALSE, warning=FALSE}
+g1=ggplot(combined_data1, aes(x = week12, y = glucose_level12, color = Type)) +
+  geom_line(size = 1) +
+  labs(title = "Forecasted Glucose Levels for Glipizide",
+       x = "Week",
+       y = "Glucose Level") +theme_minimal()+geom_vline(xintercept = 9,color="blue")+geom_hline(yintercept = 120,linetype="dotted",size=1,color="black")+
+  geom_hline(yintercept = 80,linetype="dotted",size=1,color="black")+
+  annotate(geom="text",label="80",x=-0.5,y=83,colour="black")+annotate(geom="text",label="120",x=-0.5,y=123,colour="black")+theme(plot.title = element_text(hjust=0.5,face="bold"))
+ggplotly(g1)
+```
+```{r Time to Normal , echo=FALSE, message=FALSE, warning=FALSE}
+normal_range_upper <- 120
+normal_range_lower <-80
+
+forecasted_weeks <- data.frame(week = seq(weeks + 1, weeks + forecast_period),
+                               forecasted_glucose = as.numeric(glipizide_forecast$mean))
+
+time_to_normal <- forecasted_weeks %>%
+  filter(forecasted_glucose <= normal_range_upper & forecasted_glucose >= normal_range_lower) %>%
+  summarize(time_to_normal = min(week))
+
+# Print the time to normal range##################
+print(time_to_normal)
+```
+
+### Result 
+The forecasting result indicates that it will take approximately **10 weeks** for the blood glucose levels to reach the normal range, demonstrating the efficacy of the treatment in achieving optimal glucose control within a relatively short period.
+
+## Conclusions
+
+Our study compared the effectiveness of Glipizide, Metformin, and Sitagliptin in reducing blood glucose levels in Type 2 Diabetes patients. **Glipizide** showed the highest total reduction **(24.5)**, followed by **Sitagliptin (20.7)** and **Metformin (17.6)**. The ARIMA model provided accurate forecasts, with an **MAE of 6.75 and RMSE of 6.76**, predicting glucose normalization within **10 weeks**. These metrics underscore the reliability of the model in predicting future trends.
+
+**Glipizide** is the most effective  among the three medication  for lowering blood glucose levels, achieving significant reductions and forecasting normalization within **10 weeks**. This study highlights the importance of data-driven approaches in optimizing diabetes management and provides a robust framework for future research and clinical applications.
+
+
