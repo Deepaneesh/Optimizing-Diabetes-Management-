@@ -9,6 +9,10 @@ output:
     toc: true
     toc_depth: 2
     toc_float: true
+    code_folding: hide
+    code_download: true
+    theme: journal
+
 ---
 
 ```{r setup, include=FALSE}
