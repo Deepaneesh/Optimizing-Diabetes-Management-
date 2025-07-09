@@ -17,6 +17,7 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "E:/Course & Studies/Software/work area/Repos/Optimizing Diabetes Management (A Predictive Approach to Medication Effectiveness)")
 ```
 
 # Abstract
